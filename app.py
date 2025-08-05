@@ -2,10 +2,11 @@ import streamlit as st
 import pandas as pd
 from collections import Counter
 from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import plotly.express as px
-from datetime import datetime
-import google.generativeai as genai
-import os
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+from email.utils import parseaddr
 
 st.set_page_config(page_title="Dashboard Correos Outlook", layout="wide")
 
@@ -25,28 +26,16 @@ st.markdown("""
 
 st.markdown("<div class='big-title'>📬 Dashboard de Correos Outlook</div>", unsafe_allow_html=True)
 
-# Configurar clave API de Gemini (desde Secrets o input seguro)
-gemini_api_key = st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else st.text_input("🔑 API Key de Gemini", type="password")
-
-# Selector de modelo Gemini
-modelo_gemini = st.selectbox("🧠 Modelo de Gemini a usar:", [
-    "models/gemini-1.5-flash-latest",
-    "models/gemini-1.5-pro-latest",
-    "models/gemini-2.5-flash-lite"
-])
-
-if gemini_api_key:
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel(modelo_gemini)
-
 archivo = st.sidebar.file_uploader("📤 Sube tu archivo .CSV exportado desde Outlook", type="csv")
 
 if archivo:
     df = pd.read_csv(archivo, encoding='latin1')
     df.columns = df.columns.str.strip()
-    df['De'] = df['De'].str.strip().str.lower()
-    df['Asunto'] = df['Asunto'].str.strip().str.lower()
-    df['Cuerpo'] = df['Cuerpo'].str.strip().str.lower()
+    df['De'] = df['De'].str.strip()
+    df['Nombre'] = df['De'].apply(lambda x: parseaddr(x)[0].strip() or parseaddr(x)[1].split('@')[0])
+    df['Email'] = df['De'].apply(lambda x: parseaddr(x)[1].lower())
+    df['Asunto'] = df['Asunto'].astype(str).str.strip().str.lower()
+    df['Cuerpo'] = df['Cuerpo'].astype(str).str.strip().str.lower()
     df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce', dayfirst=False)
     df = df.dropna(subset=['Fecha'])
 
@@ -55,12 +44,24 @@ if archivo:
     def detectar_keywords(texto):
         return list(set([p for p in palabras_clave if p in texto]))
 
-    def sentimiento(texto):
+    # Sentimiento TextBlob
+    def sentimiento_textblob(texto):
         blob = TextBlob(texto)
         p = blob.sentiment.polarity
         if p > 0.2:
             return 'Positivo'
         elif p < -0.2:
+            return 'Negativo'
+        else:
+            return 'Neutro'
+
+    # Sentimiento VADER
+    analyzer = SentimentIntensityAnalyzer()
+    def sentimiento_vader(texto):
+        score = analyzer.polarity_scores(texto)
+        if score['compound'] > 0.2:
+            return 'Positivo'
+        elif score['compound'] < -0.2:
             return 'Negativo'
         else:
             return 'Neutro'
@@ -78,45 +79,36 @@ if archivo:
         else:
             return "🟢 Puede esperar"
 
-    def generar_resumen(texto):
-        if not gemini_api_key:
-            return "Gemini API no configurada."
-        prompt = f"Resume brevemente el siguiente correo en 1 frase clara y directa:\n\n{texto}"
-        try:
-            response = model.generate_content(prompt)
-            return response.text.strip()
-        except Exception as e:
-            return f"Error: {e}"
-
     resumen = []
-    for remitente, grupo in df.groupby('De'):
+    for (nombre, email), grupo in df.groupby(['Nombre', 'Email']):
         total = len(grupo)
         palabras = []
-        sentimientos = []
-        resumen_textos = []
+        sentimientos_tb = []
+        sentimientos_vd = []
         acciones = []
 
         for _, fila in grupo.iterrows():
             texto = f"{fila['Asunto']} {fila['Cuerpo']}"
             palabras += detectar_keywords(texto)
-            sentimientos.append(sentimiento(texto))
+            sentimientos_tb.append(sentimiento_textblob(texto))
+            sentimientos_vd.append(sentimiento_vader(texto))
             acciones.append(clasificacion_accion(texto))
-            if gemini_api_key:
-                resumen_textos.append(generar_resumen(texto))
 
         palabras_frecuentes = Counter(palabras)
-        sentimiento_dominante = Counter(sentimientos).most_common(1)[0][0]
+        sentimiento_tb_dom = Counter(sentimientos_tb).most_common(1)[0][0]
+        sentimiento_vd_dom = Counter(sentimientos_vd).most_common(1)[0][0]
         accion_predominante = Counter(acciones).most_common(1)[0][0]
-        prioritario = 'Sí' if 'urgente' in palabras_frecuentes or 'entrega' in palabras_frecuentes or sentimiento_dominante == 'Negativo' else 'No'
+        prioritario = 'Sí' if 'urgente' in palabras_frecuentes or 'entrega' in palabras_frecuentes or sentimiento_tb_dom == 'Negativo' else 'No'
 
         resumen.append({
-            'Remitente': remitente,
+            'Nombre Remitente': nombre,
+            'Correo': email,
             'Correos Recibidos': total,
             'Palabras Clave': ', '.join(palabras_frecuentes.keys()) if palabras_frecuentes else 'Ninguna',
-            'Sentimiento Dominante': sentimiento_dominante,
+            'Sentimiento TextBlob': sentimiento_tb_dom,
+            'Sentimiento VADER': sentimiento_vd_dom,
             '¿Priorizar Respuesta?': prioritario,
-            'Clasificación de Acción': accion_predominante,
-            'Resumen IA': resumen_textos[0] if resumen_textos else ''
+            'Clasificación de Acción': accion_predominante
         })
 
     resumen_df = pd.DataFrame(resumen).sort_values(by='Correos Recibidos', ascending=False)
@@ -136,10 +128,21 @@ if archivo:
         st.plotly_chart(fig1, use_container_width=True)
 
     with col2:
-        por_remitente = df['De'].value_counts().nlargest(10).reset_index()
+        por_remitente = df['Nombre'].value_counts().nlargest(10).reset_index()
         por_remitente.columns = ['Remitente', 'Cantidad']
         fig2 = px.bar(por_remitente, x='Remitente', y='Cantidad', title='Top 10 Remitentes')
         st.plotly_chart(fig2, use_container_width=True)
+
+    st.markdown("### ☁️ Nube de palabras (corpus completo)")
+    texto_completo = " ".join(df['Cuerpo'].astype(str))
+    if texto_completo.strip():
+        wordcloud = WordCloud(width=800, height=400, background_color="white", colormap='viridis').generate(texto_completo)
+        fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
+        ax_wc.imshow(wordcloud, interpolation="bilinear")
+        ax_wc.axis("off")
+        st.pyplot(fig_wc)
+    else:
+        st.info("No hay suficiente texto para generar la nube de palabras.")
 
     st.markdown("### 🧠 Análisis por Remitente")
 
@@ -150,7 +153,7 @@ if archivo:
     if filtro_prioridad == "Solo prioritarios":
         df_filtrado = df_filtrado[df_filtrado['¿Priorizar Respuesta?'] == 'Sí']
     if buscar_remitente:
-        df_filtrado = df_filtrado[df_filtrado['Remitente'].str.contains(buscar_remitente)]
+        df_filtrado = df_filtrado[df_filtrado['Nombre Remitente'].str.lower().str.contains(buscar_remitente)]
 
     st.dataframe(df_filtrado, use_container_width=True)
 
