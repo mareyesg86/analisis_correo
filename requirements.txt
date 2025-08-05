@@ -1,5 +1,7 @@
 streamlit
 pandas
 textblob
+vaderSentiment
 plotly
-google-generativeai
+matplotlib
+wordcloud
