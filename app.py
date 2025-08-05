@@ -65,6 +65,19 @@ if archivo:
         else:
             return 'Neutro'
 
+    def clasificacion_accion(texto):
+        texto = texto.lower()
+        if any(p in texto for p in ["urgente", "favor", "responder", "pendiente"]):
+            return "🔴 Leer y responder"
+        elif any(p in texto for p in ["delegar", "avisar a", "encargarse"]):
+            return "🟡 Delegar"
+        elif any(p in texto for p in ["solo informar", "fyi", "adjunto informe", "revisión"]):
+            return "🟢 Puede esperar"
+        elif any(p in texto for p in ["entregar informe", "realizar", "subir a plataforma"]):
+            return "🔵 Tarea propia"
+        else:
+            return "🟢 Puede esperar"
+
     def generar_resumen(texto):
         if not gemini_api_key:
             return "Gemini API no configurada."
@@ -81,16 +94,19 @@ if archivo:
         palabras = []
         sentimientos = []
         resumen_textos = []
+        acciones = []
 
         for _, fila in grupo.iterrows():
             texto = f"{fila['Asunto']} {fila['Cuerpo']}"
             palabras += detectar_keywords(texto)
             sentimientos.append(sentimiento(texto))
+            acciones.append(clasificacion_accion(texto))
             if gemini_api_key:
                 resumen_textos.append(generar_resumen(texto))
 
         palabras_frecuentes = Counter(palabras)
         sentimiento_dominante = Counter(sentimientos).most_common(1)[0][0]
+        accion_predominante = Counter(acciones).most_common(1)[0][0]
         prioritario = 'Sí' if 'urgente' in palabras_frecuentes or 'entrega' in palabras_frecuentes or sentimiento_dominante == 'Negativo' else 'No'
 
         resumen.append({
@@ -99,6 +115,7 @@ if archivo:
             'Palabras Clave': ', '.join(palabras_frecuentes.keys()) if palabras_frecuentes else 'Ninguna',
             'Sentimiento Dominante': sentimiento_dominante,
             '¿Priorizar Respuesta?': prioritario,
+            'Clasificación de Acción': accion_predominante,
             'Resumen IA': resumen_textos[0] if resumen_textos else ''
         })
 
