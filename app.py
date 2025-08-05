@@ -28,9 +28,16 @@ st.markdown("<div class='big-title'>📬 Dashboard de Correos Outlook</div>", un
 # Configurar clave API de Gemini (desde Secrets o input seguro)
 gemini_api_key = st.secrets["GEMINI_API_KEY"] if "GEMINI_API_KEY" in st.secrets else st.text_input("🔑 API Key de Gemini", type="password")
 
+# Selector de modelo Gemini
+modelo_gemini = st.selectbox("🧠 Modelo de Gemini a usar:", [
+    "models/gemini-1.5-flash-latest",
+    "models/gemini-1.5-pro-latest",
+    "models/gemini-2.5-flash-lite"
+])
+
 if gemini_api_key:
     genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel("models/gemini-1.5-flash-latest")  # usa ruta oficial
+    model = genai.GenerativeModel(modelo_gemini)
 
 archivo = st.sidebar.file_uploader("📤 Sube tu archivo .CSV exportado desde Outlook", type="csv")
 
